@@ -1,0 +1,149 @@
+version: "3.8"
+
+services:
+  # PostgreSQL for Airflow metadata
+  airflow_postgres:
+    image: postgres:15
+    container_name: airflow_postgres
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow_db
+    ports:
+      - "5433:5432"  # Avoid conflict with your ETL PostgreSQL
+    volumes:
+      - airflow_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow -d airflow_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # PostgreSQL for ETL data
+  etl_postgres:
+    image: postgres:15
+    container_name: etl_postgres
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
+    ports:
+      - "${DB_PORT}:5432"
+    volumes:
+      - etl_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Redis for Celery
+  redis:
+    image: redis:7
+    container_name: airflow_redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Airflow Webserver
+  airflow_webserver:
+    build:
+      context: .
+      dockerfile: airflow/Dockerfile
+    container_name: airflow_webserver
+    depends_on:
+      airflow_postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      etl_postgres:
+        condition: service_healthy
+    environment:
+      AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+      AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow_postgres/airflow_db
+      AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://airflow:airflow@airflow_postgres/airflow_db
+      AIRFLOW__CELERY__BROKER_URL: redis://redis:6379/0
+      AIRFLOW__CORE__FERNET_KEY: "your_fernet_key_here"  # Generate with: `openssl rand -base64 32`
+      AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+      DB_HOST: etl_postgres  # Use the ETL PostgreSQL service name
+      DB_PORT: 5432
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./airflow/plugins:/opt/airflow/plugins
+      - ./scripts:/opt/airflow/scripts
+      - ./config:/opt/airflow/config
+    ports:
+      - "8080:8080"
+    command: airflow webserver
+    restart: on-failure
+
+  # Airflow Scheduler
+  airflow_scheduler:
+    build:
+      context: .
+      dockerfile: airflow/Dockerfile
+    container_name: airflow_scheduler
+    depends_on:
+      airflow_postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      etl_postgres:
+        condition: service_healthy
+    environment:
+      AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+      AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow_postgres/airflow_db
+      AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://airflow:airflow@airflow_postgres/airflow_db
+      AIRFLOW__CELERY__BROKER_URL: redis://redis:6379/0
+      AIRFLOW__CORE__FERNET_KEY: "your_fernet_key_here"
+      AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+      DB_HOST: etl_postgres
+      DB_PORT: 5432
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./airflow/plugins:/opt/airflow/plugins
+      - ./scripts:/opt/airflow/scripts
+      - ./config:/opt/airflow/config
+    command: airflow scheduler
+    restart: on-failure
+
+  # Airflow Worker
+  airflow_worker:
+    build:
+      context: .
+      dockerfile: airflow/Dockerfile
+    container_name: airflow_worker
+    depends_on:
+      airflow_postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      etl_postgres:
+        condition: service_healthy
+    environment:
+      AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+      AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow_postgres/airflow_db
+      AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://airflow:airflow@airflow_postgres/airflow_db
+      AIRFLOW__CELERY__BROKER_URL: redis://redis:6379/0
+      AIRFLOW__CORE__FERNET_KEY: "6gxBondhQxBLJLq9xUyEEfKGeE3a954dfUDPTSP5Kwk="
+      AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+      DB_HOST: etl_postgres
+      DB_PORT: 5432
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./airflow/plugins:/opt/airflow/plugins
+      - ./scripts:/opt/airflow/scripts
+      - ./config:/opt/airflow/config
+    command: airflow celery worker
+    restart: on-failure
+
+volumes:
+  airflow_postgres_data:
+  etl_postgres_data:
